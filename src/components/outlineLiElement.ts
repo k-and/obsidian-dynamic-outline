@@ -1,5 +1,5 @@
 import DynamicOutlinePlugin from "main";
-import { HeadingCache } from "obsidian";
+import { HeadingCache, MarkdownRenderer } from "obsidian";
 import SearchContainer from "./searchContainer";
 import Outline from "src/components/Outline";
 
@@ -69,8 +69,11 @@ export default class DynamicLiElement {
 
 		const aElement = createEl("a", {
 			cls: `heading-level-${heading.level}`,
-			text: heading.heading,
 		});
+
+		// Render heading text with LaTeX math support (async, no await needed)
+		this._renderHeadingWithMath(aElement, heading.heading);
+
 		liElement.append(aElement);
 
 		this._setupEventListener(liElement, heading);
@@ -213,5 +216,103 @@ export default class DynamicLiElement {
 
 		searchContainer.clearInput(false);
 		window.removeHovered();
+	}
+
+	/**
+	 * Renders heading text with LaTeX math notation support.
+	 * Only processes math delimiters, leaving other text as-is to avoid
+	 * unwanted markdown parsing (e.g., "1. " being treated as a list).
+	 */
+	private async _renderHeadingWithMath(
+		container: HTMLElement,
+		text: string
+	): Promise<void> {
+		// Quick check: if no $ symbols, just render as plain text (fast path)
+		if (!text.includes("$")) {
+			container.appendText(text);
+			return;
+		}
+
+		// Regex to match inline ($...$) and display ($$...$$) math
+		// Note: This matches $$ first to avoid matching it as two separate $ delimiters
+		const mathRegex = /(\$\$[\s\S]+?\$\$|\$[^\$\n]+?\$)/g;
+
+		let lastIndex = 0;
+		let match;
+		let foundMath = false;
+
+		while ((match = mathRegex.exec(text)) !== null) {
+			foundMath = true;
+			// Add text before the math as plain text
+			if (match.index > lastIndex) {
+				container.appendText(text.substring(lastIndex, match.index));
+			}
+
+			// Render the math
+			const mathText = match[0];
+			const mathContent = mathText.replace(/^\$+|\$+$/g, ""); // Remove $ symbols
+			const isDisplay = mathText.startsWith("$$");
+
+			const mathEl = container.createSpan({
+				cls: isDisplay ? "math math-block" : "math",
+			});
+			// Ensure math stays inline and doesn't break text selection
+			mathEl.style.display = "inline";
+
+			// Render using Obsidian's markdown renderer
+			try {
+				// Create a temporary container for rendering
+				const tempDiv = createDiv();
+				await MarkdownRenderer.renderMarkdown(
+					isDisplay ? `$$${mathContent}$$` : `$${mathContent}$`,
+					tempDiv,
+					"",
+					this._plugin
+				);
+
+				// Extract the actual math content, removing any wrapper paragraphs
+				const renderedMath =
+					tempDiv.querySelector(".math") ||
+					tempDiv.querySelector("mjx-container");
+				if (renderedMath) {
+					// Ensure the rendered math displays inline
+					if (renderedMath instanceof HTMLElement) {
+						renderedMath.style.display = "inline";
+					}
+					mathEl.appendChild(renderedMath);
+				} else {
+					// If we can't find the rendered math, move all content
+					while (tempDiv.firstChild) {
+						// Skip paragraph wrappers
+						if (
+							tempDiv.firstChild.nodeName === "P" &&
+							tempDiv.firstChild.firstChild
+						) {
+							while (tempDiv.firstChild.firstChild) {
+								mathEl.appendChild(tempDiv.firstChild.firstChild);
+							}
+							tempDiv.firstChild.remove();
+						} else {
+							mathEl.appendChild(tempDiv.firstChild);
+						}
+					}
+				}
+			} catch (error) {
+				// Fallback to showing the raw math text
+				mathEl.appendText(mathText);
+			}
+
+			lastIndex = match.index + match[0].length;
+		}
+
+		// Add remaining text after the last math expression
+		if (lastIndex < text.length) {
+			container.appendText(text.substring(lastIndex));
+		}
+
+		// If no valid math was found (e.g., "Price is $5"), render as plain text
+		if (!foundMath) {
+			container.appendText(text);
+		}
 	}
 }
